@@ -17,8 +17,7 @@ public class ServerBootstrap : BasePlugin
     public override string ModuleAuthor => "ltsochev-dev";
     public override string ModuleDescription => "Bootstraps the servers properly according to Agones annotations.";
     private AgonesSDK agones;
-    private readonly ConcurrentQueue<Action> _mainThreadActions = new();
-
+    
     public ServerBootstrap()
     {
         agones = new AgonesSDK(logger: Logger);
@@ -33,7 +32,7 @@ public class ServerBootstrap : BasePlugin
 
     private void OnGameServerChange(GameServer gs)
     {
-        if (gs == null)
+        if (gs == null || gs.Status?.State == null || gs.Status.State == "")
         {
             Logger.LogWarning("[Bootstrap] GS Update: GameServer update was null");
             return;
@@ -42,13 +41,31 @@ public class ServerBootstrap : BasePlugin
         var state = gs.Status?.State ?? "Unknown";
         var name = gs.ObjectMeta?.Name ?? "Unknown";
 
+        if (state == "Unknown")
+        {
+            return;
+        }
+
         Logger.LogInformation("[Bootstrap] GS Update: {Name}, state={State}", name, state);
+
+        // @todo Remove server password, whitelist etc etc
 
         if (gs.ObjectMeta?.Annotations != null)
         {
             foreach (var kv in gs.ObjectMeta.Annotations)
             {
-                Logger.LogInformation("Annotation {Key}={Value}", kv.Key, kv.Value);
+                Logger.LogInformation("[Bootstrap] Annotation {Key}={Value}", kv.Key, kv.Value);
+            }
+
+            if (gs.ObjectMeta?.Annotations?.TryGetValue("map", out var rawMap) == true)
+            {
+                var map = rawMap?.Trim();
+                if (!string.IsNullOrWhiteSpace(map))
+                {
+                    Logger.LogInformation("[Bootstrap] Changing map to {Map}", map);
+
+                    Server.NextFrame(() => Server.ExecuteCommand($"changelevel {map}"));
+                }
             }
         }
 
