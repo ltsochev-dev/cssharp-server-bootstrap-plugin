@@ -7,7 +7,6 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using Microsoft.Extensions.Logging;
-using System.Collections.Concurrent;
 
 [MinimumApiVersion(80)]
 public class ServerBootstrap : BasePlugin
@@ -62,9 +61,7 @@ public class ServerBootstrap : BasePlugin
                 var map = rawMap?.Trim();
                 if (!string.IsNullOrWhiteSpace(map))
                 {
-                    Logger.LogInformation("[Bootstrap] Changing map to {Map}", map);
-
-                    Server.NextFrame(() => Server.ExecuteCommand($"changelevel {map}"));
+                    ChangeMap(map);
                 }
             }
         }
@@ -77,5 +74,21 @@ public class ServerBootstrap : BasePlugin
         Logger.LogInformation("[Bootstrap] Unload: Plugin unloading...");
 
         base.Unload(hotReload);
+    }
+
+    private void ChangeMap(string map)
+    {
+        Server.NextFrame(() =>
+        {
+            if (Server.IsMapValid(map))
+            {
+                Logger.LogInformation("[Bootstrap] Changing map to {Map}", map);
+                Server.ExecuteCommand($"changelevel {map}");
+            }
+            else
+            {
+                Logger.LogWarning("[Bootstrap] Map Change: Failed to change map to {Map}. The map doesn't exist in the server map list", map);
+            }
+        });
     }
 }
