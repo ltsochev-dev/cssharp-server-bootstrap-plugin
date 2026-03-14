@@ -34,7 +34,6 @@ namespace ServerBootstrap.Controllers
             Plugin.RegisterEventHandler<EventWarmupEnd>(OnWarmUpEnd);
             Plugin.RegisterEventHandler<EventCsWinPanelMatch>(OnMatchEnd);
         }
-        
 
         public override void Deactivate()
         {
@@ -131,6 +130,8 @@ namespace ServerBootstrap.Controllers
 
             Plugin.AddTimer(8.0f, async () => await Plugin.ShutdownServer("map_end"));
 
+            EnterMatchEndPhase();
+
             return HookResult.Continue;
         }
 
@@ -200,6 +201,13 @@ namespace ServerBootstrap.Controllers
             // @todo remove all weapon restrictions, revert to regular round time limits and revert buy time limit and reset/start the match
 
             Server.ExecuteCommand("mp_restartgame 1");
+        }
+
+        private void EnterMatchEndPhase()
+        {
+            Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering match_end phase", Plugin.serverName);
+
+            phase = MatchPhase.MatchEnd;
         }
 
         private string GetTeamName(int teamId)
