@@ -18,15 +18,5 @@ namespace ServerBootstrap.Controllers
 
         public virtual void Activate() { }
         public virtual void Deactivate() { }
-
-        public virtual HookResult OnPlayerConnect(EventPlayerConnectFull ev, GameEventInfo info)
-            => HookResult.Continue;
-
-        public virtual HookResult OnWarmupEnd(EventWarmupEnd ev, GameEventInfo info)
-            => HookResult.Continue;
-
-        public virtual HookResult OnRoundEnd(EventRoundEnd ev, GameEventInfo info) => HookResult.Continue;
-
-        public virtual HookResult OnMatchEnd(EventCsWinPanelMatch ev, GameEventInfo info) => HookResult.Continue;
     }
 }

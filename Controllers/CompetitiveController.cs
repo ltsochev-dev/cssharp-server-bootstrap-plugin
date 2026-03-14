@@ -14,6 +14,9 @@ namespace ServerBootstrap.Controllers
         public override void Activate()
         {
             Logger.LogInformation("[Competitive] Activated.");
+
+            Plugin.RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
+            Plugin.RegisterEventHandler<EventCsWinPanelMatch>(OnMatchEnd);
         }
 
         public override void Deactivate()
@@ -21,14 +24,14 @@ namespace ServerBootstrap.Controllers
             Logger.LogInformation("[Competitive] Deactivated.");
         }
 
-        public override HookResult OnRoundEnd(EventRoundEnd ev, GameEventInfo info)
+        public HookResult OnRoundEnd(EventRoundEnd ev, GameEventInfo info)
         {
             lastWinner = ev.Winner;
 
             return HookResult.Continue;
         }
 
-        public override HookResult OnMatchEnd(EventCsWinPanelMatch ev, GameEventInfo info)
+        public HookResult OnMatchEnd(EventCsWinPanelMatch ev, GameEventInfo info)
         {
             string winner = lastWinner switch
             {

@@ -127,28 +127,7 @@ public class ServerBootstrap : BasePlugin
         idleTimer?.Kill();
         idleTimer = null;
 
-        activeController?.OnPlayerConnect(@event, info);
-
         return HookResult.Continue;
-    }
-
-    [GameEventHandler]
-    public HookResult OnWarmupEnd(EventWarmupEnd ev, GameEventInfo info)
-    {
-        return activeController?.OnWarmupEnd(ev, info) ?? HookResult.Continue;
-    }
-
-    [GameEventHandler]
-    public HookResult OnRoundEnd(EventRoundEnd ev, GameEventInfo info)
-    {
-        return activeController?.OnRoundEnd(ev, info) ?? HookResult.Continue;
-    }
-
-
-    [GameEventHandler]
-    public HookResult OnMatchEnd(EventCsWinPanelMatch ev, GameEventInfo info)
-    {
-        return activeController?.OnMatchEnd(ev, info) ?? HookResult.Continue;
     }
     #endregion
 
