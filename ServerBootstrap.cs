@@ -20,7 +20,7 @@ public class ServerBootstrap : BasePlugin
     public override string ModuleDescription => "Bootstraps the servers properly according to Agones annotations.";
     private AgonesSDK agones;
     private CSSTimer? idleTimer;
-    private string serverName = "Unknown";
+    public string serverName { get; private set; } = "Unknown";
     private string prevState = "Scheduled";
     private IGameModeController? activeController;
 
@@ -119,11 +119,12 @@ public class ServerBootstrap : BasePlugin
     public HookResult OnPlayerConnect(EventPlayerConnectFull @event, GameEventInfo info)
     {
         CCSPlayerController? player = @event.Userid;
-        if (player == null || player.IsHLTV || player.IsBot || !player.IsValid)
+
+        if (Utils.isInvalidPlayer(player))
         {
             return HookResult.Continue;
         }
-
+        
         idleTimer?.Kill();
         idleTimer = null;
 
