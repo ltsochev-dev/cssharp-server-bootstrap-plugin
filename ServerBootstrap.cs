@@ -6,8 +6,10 @@ using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
-using CSSTimer = CounterStrikeSharp.API.Modules.Timers.Timer;
+using global::ServerBootstrap.Config;
+using global::ServerBootstrap.Contracts;
 using Microsoft.Extensions.Logging;
+using CSSTimer = CounterStrikeSharp.API.Modules.Timers.Timer;
 
 [MinimumApiVersion(80)]
 public class ServerBootstrap : BasePlugin
@@ -18,10 +20,9 @@ public class ServerBootstrap : BasePlugin
     public override string ModuleDescription => "Bootstraps the servers properly according to Agones annotations.";
     private AgonesSDK agones;
     private CSSTimer? idleTimer;
-    private string oldGsState = "Unknown";
     private string serverName = "Unknown";
-    private string? mode;
-    private int lastWinner = 0;
+    private string prevState = "Scheduled";
+    private IGameModeController? activeController;
 
     public ServerBootstrap()
     {
@@ -33,6 +34,13 @@ public class ServerBootstrap : BasePlugin
         Logger.LogInformation("[Bootstrap] Load: Plugin loading...");
 
         agones.WatchGameServer(OnGameServerChange);
+    }
+
+    public void SetController(IGameModeController controller)
+    {
+        activeController?.Deactivate();
+        activeController = controller;
+        activeController.Activate();
     }
 
     private void OnGameServerChange(GameServer gs)
@@ -49,92 +57,111 @@ public class ServerBootstrap : BasePlugin
 
         if (state == "Unknown")
         {
+            Task.Run(async () => await agones.ReadyAsync());
+
             return;
         }
 
         Logger.LogInformation("[Bootstrap] GS Update: {Name}, state={State}", serverName, state);
 
-        // @todo Remove server password, whitelist etc etc
-
-        if (gs.ObjectMeta?.Annotations != null)
+        if (prevState == "Ready" && state == "Allocated")
         {
-            foreach (var kv in gs.ObjectMeta.Annotations)
+            InitGameServer(gs);
+        }
+    }
+
+    private void InitGameServer(GameServer gs)
+    {
+        Logger.LogInformation("[Bootstrap] GS Update: Initializing allocated gameserver");
+
+        StartIdleTimer(60.0f);
+
+        var annotations = gs.ObjectMeta?.Annotations;
+
+        var result = AnnotationsParser.Parse(annotations);
+
+        if (!result.Success)
+        {
+            foreach (var error in result.Errors)
             {
-                Logger.LogInformation("[Bootstrap] Annotation {Key}={Value}", kv.Key, kv.Value);
+                Logger.LogError("[Bootstrap] Annotation parse error: {Error}", error);
             }
 
-            if (gs.ObjectMeta?.Annotations?.TryGetValue("map", out var rawMap) == true)
-            {
-                var map = rawMap?.Trim();
-                if (!string.IsNullOrWhiteSpace(map))
-                {
-                    ChangeMap(map);
-                }
-            }
-
-            if (gs.ObjectMeta?.Annotations?.TryGetValue("mode", out var rawMode) == true)
-            {
-                var trimmedMode = rawMode.Trim();
-                if (!string.IsNullOrWhiteSpace (trimmedMode))
-                {
-                    mode = trimmedMode;
-                }
-            }
+            return;
         }
 
-        if (state != oldGsState)
+        var dto = result.Data!;
+
+        Logger.LogInformation(
+            "[Bootstrap] Parsed annotations: mode={Mode}, map={Map}, hltv={Hltv}",
+            dto.Mode,
+            dto.Map ?? "<null>",
+            dto.EnableHltv
+        );
+
+        var controller = GameModeControllerFactory.Create(this, dto);
+
+        if (controller == null)
         {
-            oldGsState = state;
+            Logger.LogWarning(
+                "[Bootstrap] Unsupported mode after parse: {Mode}",
+                dto.Mode
+            );
+
+            return;
         }
-        
-        // Kill allocated servers if nobody connects
-        if (state == "Allocated")
+
+        SetController(controller);
+    }
+
+    #region Game Event Handlers
+    [GameEventHandler]
+    public HookResult OnPlayerConnect(EventPlayerConnectFull @event, GameEventInfo info)
+    {
+        CCSPlayerController? player = @event.Userid;
+        if (player == null || player.IsHLTV || player.IsBot || !player.IsValid)
         {
-            Server.NextFrame(() =>
-            {
-                StartIdleTimer(60.0f);
-            });
+            return HookResult.Continue;
         }
+
+        idleTimer?.Kill();
+        idleTimer = null;
+
+        activeController?.OnPlayerConnect(@event, info);
+
+        return HookResult.Continue;
+    }
+
+    [GameEventHandler]
+    public HookResult OnWarmupEnd(EventWarmupEnd ev, GameEventInfo info)
+    {
+        return activeController?.OnWarmupEnd(ev, info) ?? HookResult.Continue;
     }
 
     [GameEventHandler]
     public HookResult OnRoundEnd(EventRoundEnd ev, GameEventInfo info)
     {
-        lastWinner = ev.Winner;
-
-        return HookResult.Continue;
+        return activeController?.OnRoundEnd(ev, info) ?? HookResult.Continue;
     }
 
 
     [GameEventHandler]
     public HookResult OnMatchEnd(EventCsWinPanelMatch ev, GameEventInfo info)
     {
-        string winner = lastWinner switch
-        {
-            2 => "Terrorists",
-            3 => "Counter-Terrorists",
-            _ => "Unknown"
-        };
-
-        Logger.LogInformation("[Bootstrap] Match End: Winner: {Winner}", winner);
-
-        Server.PrintToChatAll($"[ClutchPoint] Match finished. Winner: {winner}");
-
-        AddTimer(8.0f, async () => {
-            await ShutdownServer("match_end");
-        });
-
-        return HookResult.Continue;
+        return activeController?.OnMatchEnd(ev, info) ?? HookResult.Continue;
     }
+    #endregion
 
     public override void Unload(bool hotReload)
     {
         Logger.LogInformation("[Bootstrap] Unload: Plugin unloading...");
 
+        activeController?.Deactivate();
+
         base.Unload(hotReload);
     }
 
-    private void ChangeMap(string map)
+    public void ChangeMap(string map)
     {
         Server.NextFrame(() =>
         {
@@ -157,26 +184,9 @@ public class ServerBootstrap : BasePlugin
         idleTimer = AddTimer(seconds, async () => await ShutdownServer());
     }
 
-    [GameEventHandler]
-    public HookResult OnPlayerConnect(EventPlayerConnectFull @event, GameEventInfo info)
+    public async Task ShutdownServer(string reason = "inactivity")
     {
-        CCSPlayerController? player = @event.Userid;
-        if (player == null || player.IsHLTV || player.IsBot || !player.IsValid)
-        {
-            return HookResult.Continue;
-        }
-
-        Logger.LogInformation("[Bootstrap] Shutdown: Player connected. Killing shutdown timer. AgonesPlugin will GC the server.");
-
-        idleTimer?.Kill();
-        idleTimer = null;
-
-        return HookResult.Continue;
-    }
-
-    private async Task ShutdownServer(string reason = "inactivity")
-    {
-        Logger.LogInformation("[Bootstrap] Shutdown: Server {Name} is shutting down due to {Reason} after allocation.", serverName, reason);
+        Logger.LogInformation("[Bootstrap] Shutdown: Server {Name} is shutting down due to {Reason}.", serverName, reason);
 
         try
         {
