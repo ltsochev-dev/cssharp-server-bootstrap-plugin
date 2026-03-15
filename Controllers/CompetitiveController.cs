@@ -57,7 +57,7 @@ namespace ServerBootstrap.Controllers
 
                 if (newPhase is null)
                 {
-                    commandInfo.ReplyToCommand($"Unknown phase {newPhaseRaw}. Valid options: Warmup, Knife, PostKnife, Game, MatchEnd");
+                    commandInfo.ReplyToCommand($"Unknown phase \"{newPhaseRaw}\". Valid options: Warmup, Knife, PostKnife, Game, MatchEnd");
                     return;
                 }
 
@@ -159,6 +159,12 @@ namespace ServerBootstrap.Controllers
                 return HookResult.Continue;
             }
 
+            if (ev.Winner == (int)CsTeam.None)
+            {
+                Server.PrintToChatAll($"No knife round winner! Marking the game as a tie and shutting down the server.");
+                Task.Run(async () => await Plugin.GracefulShutdown("kniferound_tie"));
+            }
+
             knifeRoundWinner = ev.Winner;
 
             var winnerTeam = GetTeamName(ev.Winner);
@@ -183,9 +189,9 @@ namespace ServerBootstrap.Controllers
 
             Server.PrintToChatAll($"[ClutchPoint] Match finished. Winner: {winner}");
 
-            Plugin.AddTimer(8.0f, async () => await Plugin.ShutdownServer("map_end"));
-
             EnterMatchEndPhase();
+
+            Plugin.AddTimer(8.0f, async () => await Plugin.GracefulShutdown("map_end"));
 
             return HookResult.Continue;
         }

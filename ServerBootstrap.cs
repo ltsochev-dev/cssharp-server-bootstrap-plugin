@@ -23,6 +23,7 @@ public class ServerBootstrap : BasePlugin
     public string serverName { get; private set; } = "Unknown";
     private string prevState = "Scheduled";
     private IGameModeController? activeController;
+    private string? shutdownJoinBlockToken;
 
     public ServerBootstrap()
     {
@@ -162,6 +163,54 @@ public class ServerBootstrap : BasePlugin
         Logger.LogInformation("[Bootstrap] Shutdown: Server allocated. Idle timer started.");
 
         idleTimer = AddTimer(seconds, async () => await ShutdownServer());
+    }
+
+    public async Task GracefulShutdown(string reason = "inactivity")
+    {
+        Logger.LogInformation("[Bootstrap] Graceful shutdown started. Reason: {Reason}", reason);
+
+        try
+        {
+            shutdownJoinBlockToken = $"shutdown_{Guid.NewGuid():N}";
+            Server.NextFrame(() =>
+            {
+                Server.PrintToChatAll("[ClutchPoint] Server is shutting down. All players will be disconnected.");
+                Server.ExecuteCommand($"sv_password \"{shutdownJoinBlockToken}\"");
+            });
+
+            await Task.Delay(250);
+
+            Server.NextFrame(() => {
+                foreach (var player in Utilities.GetPlayers())
+                {
+                    if (player is null || !player.IsValid) continue;
+
+                    try
+                    {
+                        var userId = player.UserId;
+
+                        if (userId.HasValue)
+                        {
+                            Server.ExecuteCommand($"kickid {userId.Value} \"Server shutting down: {reason}\"");
+                        } else
+                        {
+                            var safeName = (player.PlayerName ?? "player").Replace("\"", "");
+                            Server.ExecuteCommand($"kick \"{safeName}\"");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError(ex, "[Bootstrap] Failed to kick player {PlayerName}", player.PlayerName);
+                    }
+                }
+            });
+
+            await Task.Delay(1000);
+
+            await ShutdownServer(reason);
+        } catch (Exception ex) {
+            Logger.LogError(ex, "[Bootstrap] Graceful shutdown failed.");
+        }
     }
 
     public async Task ShutdownServer(string reason = "inactivity")
