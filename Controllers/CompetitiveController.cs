@@ -1,6 +1,7 @@
 ﻿using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API.Modules.Memory;
 using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Extensions.Logging;
 using CSSTimer = CounterStrikeSharp.API.Modules.Timers.Timer;
@@ -30,9 +31,56 @@ namespace ServerBootstrap.Controllers
         {
             Logger.LogInformation("[Competitive] Activated.");
 
+            Plugin.RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
             Plugin.RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
-            Plugin.RegisterEventHandler<EventWarmupEnd>(OnWarmUpEnd);
+            Plugin.RegisterEventHandler<EventWarmupEnd>(OnWarmUpEnd, HookMode.Pre);
             Plugin.RegisterEventHandler<EventCsWinPanelMatch>(OnMatchEnd);
+
+            Plugin.AddCommand("css_setphase", "For admins only. Sets the phase for easier debug.", (CCSPlayerController? player, CommandInfo commandInfo) => 
+            {
+                if (player is null || !player.IsValid)
+                {
+                    return;
+                }
+
+                var newPhaseRaw = commandInfo.GetArg(1).Trim().ToLower();
+
+                MatchPhase? newPhase = newPhaseRaw switch
+                {
+                    "warmup" => MatchPhase.Warmup,
+                    "knife" => MatchPhase.Knife,
+                    "postknife" => MatchPhase.PostKnife,
+                    "game" => MatchPhase.Game,
+                    "matchend" => MatchPhase.MatchEnd,
+                    _ => null
+                };
+
+                if (newPhase is null)
+                {
+                    commandInfo.ReplyToCommand($"Unknown phase {newPhaseRaw}. Valid options: Warmup, Knife, PostKnife, Game, MatchEnd");
+                    return;
+                }
+
+                switch (newPhase)
+                {
+                    case MatchPhase.Warmup:
+                        phase = MatchPhase.Warmup;
+                        break;
+                    case MatchPhase.Knife:
+                        EnterKnifePhase();
+                        break;
+                    case MatchPhase.PostKnife:
+                        knifeRoundWinner = player.TeamNum;
+                        EnterPostKnifePhase();
+                        break;
+                    case MatchPhase.Game:
+                        EnterGamePhase();
+                        break;
+                    case MatchPhase.MatchEnd:
+                        EnterGamePhase();
+                        break;
+                }
+            });
         }
 
         public override void Deactivate()
@@ -50,7 +98,7 @@ namespace ServerBootstrap.Controllers
 
         private void OnSwitchCommand(CCSPlayerController? player, CommandInfo commandInfo)
         {
-            if (!CannotChooseTeam(player))
+            if (CannotChooseTeam(player))
             {
                 return;
             }
@@ -62,7 +110,7 @@ namespace ServerBootstrap.Controllers
 
         private void onJoinCtSideCommand(CCSPlayerController? player, CommandInfo commandInfo)
         {
-            if (!CannotChooseTeam(player))
+            if (CannotChooseTeam(player))
             {
                 return;
             }
@@ -77,7 +125,7 @@ namespace ServerBootstrap.Controllers
 
         private void onJoinTSideCommand(CCSPlayerController? player, CommandInfo commandInfo)
         {
-            if (!CannotChooseTeam(player))
+            if (CannotChooseTeam(player))
             {
                 return;
             }
@@ -92,6 +140,11 @@ namespace ServerBootstrap.Controllers
 
         public HookResult OnWarmUpEnd(EventWarmupEnd ev, GameEventInfo info)
         {
+            if (phase != MatchPhase.Warmup)
+            {
+                return HookResult.Continue;
+            }
+
             EnterKnifePhase();
 
             return HookResult.Continue;
@@ -101,16 +154,18 @@ namespace ServerBootstrap.Controllers
         {
             lastRoundWinner = ev.Winner;
 
-            if (phase == MatchPhase.Knife)
+            if (phase != MatchPhase.Knife)
             {
-                knifeRoundWinner = ev.Winner;
-
-                var winnerTeam = GetTeamName(ev.Winner);
-
-                Server.PrintToChatAll($"Knife round winner team: {winnerTeam}!");
-
-                EnterPostKnifePhase();
+                return HookResult.Continue;
             }
+
+            knifeRoundWinner = ev.Winner;
+
+            var winnerTeam = GetTeamName(ev.Winner);
+
+            Server.PrintToChatAll($"Knife round winner team: {winnerTeam}!");
+
+            EnterPostKnifePhase();
 
             return HookResult.Continue;
         }
@@ -135,6 +190,32 @@ namespace ServerBootstrap.Controllers
             return HookResult.Continue;
         }
 
+        private HookResult OnPlayerSpawn(EventPlayerSpawn @event, GameEventInfo info)
+        {
+            if (phase != MatchPhase.Knife)
+            {
+                return HookResult.Continue;
+            }
+
+            var player = @event.Userid;
+            if (Utils.isInvalidPlayer(player))
+            {
+                return HookResult.Continue;
+            }
+
+            try
+            {
+                player?.RemoveWeapons();
+            } catch (Exception ex)
+            {
+                Logger.LogError(ex, "[Competitive] Failed enforcing knife-only loadout for {Player}", player?.PlayerName);
+                Logger.LogError(ex.Message);
+            }
+            
+
+            return HookResult.Continue;
+        }
+
         private bool IsKnifeRoundWinner(CCSPlayerController? player)
         {
             return player is not null && player.TeamNum == knifeRoundWinner;
@@ -142,33 +223,49 @@ namespace ServerBootstrap.Controllers
 
         private void SwitchTeams()
         {
-            foreach (var player in Utilities.GetPlayers())
+            Server.RunOnTick(Server.TickCount + 1, () =>
             {
-                if (Utils.isInvalidPlayer(player)) continue;
 
-                switch (player.Team)
+                foreach (var player in Utilities.GetPlayers())
                 {
-                    case CsTeam.Terrorist:
-                        player.SwitchTeam(CsTeam.CounterTerrorist);
-                        break;
-                    case CsTeam.CounterTerrorist:
-                        player.SwitchTeam(CsTeam.Terrorist);
-                        break;
+                    if (Utils.isInvalidPlayer(player)) continue;
+
+                    switch (player.Team)
+                    {
+                        case CsTeam.Terrorist:
+                            player.SwitchTeam(CsTeam.CounterTerrorist);
+                            break;
+                        case CsTeam.CounterTerrorist:
+                            player.SwitchTeam(CsTeam.Terrorist);
+                            break;
+                    }
                 }
-            }
+            });
         }
 
         private void EnterKnifePhase()
         {
+            if (phase != MatchPhase.Warmup)
+            {
+                return;
+            }
+
             Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering Knife phase", Plugin.serverName);
 
             phase = MatchPhase.Knife;
 
             // @todo disable all weapons, only leave knives, remove round time limits, lower the buy time to 3 seconds and reset the match
+
+            htmlWriter.WrteSimpleText($"<b><font color='red'>Knife Round!</font></b><span>Winner of this round gets to choose a team.</span>!");
         }
 
         private void EnterPostKnifePhase()
         {
+            if (phase != MatchPhase.Knife)
+            {
+                return;
+            }
+
             Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering Post-Knife phase", Plugin.serverName);
 
             phase = MatchPhase.PostKnife;
@@ -177,16 +274,30 @@ namespace ServerBootstrap.Controllers
             Plugin.AddCommand("css_t", "Switch to Terrorist team before match start.", onJoinTSideCommand);
             Plugin.AddCommand("css_ct", "Switch to Counter-Terrorist team before match start.", onJoinCtSideCommand);
 
-            Server.PrintToChatAll("Choose your team by typing !CT or !T in chat");
-            Server.PrintToChatAll("You have 30 seconds to decide.");
+            Server.PrintToChatAll("[ClutchPoint] Knife winner: choose your side with !ct or !t");
+            Server.PrintToChatAll("[ClutchPoint] Or use !switch to swap immediately.");
+            Server.PrintToChatAll("[ClutchPoint] You have 30 seconds.");
 
-            teamChoiceTimer = Plugin.AddTimer(30, () => EnterGamePhase());
+            teamChoiceTimer = Plugin.AddTimer(30.0f, () =>
+            {
+                Logger.LogInformation("[Competitive] Team choice timer expired. Starting game with current sides.");
+                EnterGamePhase();
+            });
 
             // @todo remove all weapon restrictions, switch back to warmup mode with all the weapons
+            Server.NextFrame(() =>
+            {
+                Server.ExecuteCommand("mp_restartgame 0");
+            });
         }
 
         private void EnterGamePhase()
         {
+            if (phase != MatchPhase.PostKnife)
+            {
+                return;
+            }
+
             Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering Game phase", Plugin.serverName);
 
             Plugin.RemoveCommand("css_switch", OnSwitchCommand);
@@ -200,6 +311,7 @@ namespace ServerBootstrap.Controllers
 
             // @todo remove all weapon restrictions, revert to regular round time limits and revert buy time limit and reset/start the match
 
+            Server.PrintToChatAll("[ClutchPoint] Live match starting.");
             Server.ExecuteCommand("mp_restartgame 1");
         }
 
