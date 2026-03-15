@@ -67,8 +67,10 @@ public class ServerBootstrap : BasePlugin
 
         if (prevState == "Ready" && state == "Allocated")
         {
-            InitGameServer(gs);
+            Server.NextFrame(() => InitGameServer(gs));
         }
+
+        prevState = state;
     }
 
     private void InitGameServer(GameServer gs)
@@ -88,6 +90,9 @@ public class ServerBootstrap : BasePlugin
                 Logger.LogError("[Bootstrap] Annotation parse error: {Error}", error);
             }
 
+            Logger.LogInformation("[Bootstrap] Annotation error. Shuttind down.");
+
+            Task.Run(async () => await ShutdownServer("invalid_annotations"));
             return;
         }
 
@@ -171,11 +176,13 @@ public class ServerBootstrap : BasePlugin
 
         try
         {
-            shutdownJoinBlockToken = $"shutdown_{Guid.NewGuid():N}";
             Server.NextFrame(() =>
             {
                 Server.PrintToChatAll("[ClutchPoint] Server is shutting down. All players will be disconnected.");
-                Server.ExecuteCommand($"sv_password \"{shutdownJoinBlockToken}\"");
+                LockServerForShutdown();
+
+                Server.ExecuteCommand("bot_kick");
+                Server.ExecuteCommand("bot_quota 0");
             });
 
             await Task.Delay(250);
@@ -183,7 +190,7 @@ public class ServerBootstrap : BasePlugin
             Server.NextFrame(() => {
                 foreach (var player in Utilities.GetPlayers())
                 {
-                    if (player is null || !player.IsValid) continue;
+                    if (player is null || !player.IsValid || player.IsBot) continue;
 
                     try
                     {
@@ -232,4 +239,11 @@ public class ServerBootstrap : BasePlugin
             });
         }
     }
+
+    private void LockServerForShutdown()
+    {
+        shutdownJoinBlockToken = $"shutdown_{Guid.NewGuid():N}";
+        Server.ExecuteCommand($"sv_password \"{shutdownJoinBlockToken}\"");
+    }
+
 }

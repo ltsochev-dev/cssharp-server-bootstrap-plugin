@@ -1,4 +1,5 @@
-﻿using System.Text.Json.Serialization;
+﻿using CounterStrikeSharp.API.Modules.Utils;
+using System.Text.Json.Serialization;
 
 namespace ServerBootstrap.Config.Dto
 {
@@ -9,5 +10,26 @@ namespace ServerBootstrap.Config.Dto
 
         [JsonPropertyName("teamB")]
         public List<string> TeamB { get; init; } = new();
+
+        public List<string> AllPlayers => [.. TeamA, .. TeamB];
+
+        public CsTeam? FindPlayerTeam(ulong? steamID)
+        {
+            if (steamID == null) return null;
+
+            string sidString = steamID.ToString()!;
+
+            if (TeamA.Contains(sidString))
+            {
+                return CsTeam.CounterTerrorist;
+            }
+
+            if (TeamB.Contains(sidString))
+            {
+                return CsTeam.Terrorist;
+            }
+
+            return null;
+        }
     }
 }

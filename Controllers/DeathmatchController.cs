@@ -1,11 +1,12 @@
 ﻿using Microsoft.Extensions.Logging;
+using ServerBootstrap.Config.Dto;
 
 namespace ServerBootstrap.Controllers
 {
     public sealed class DeathmatchController : GameControllerBase
     {
         public override string Mode => "deathmatch";
-        public DeathmatchController(ServerBootstrap plugin) : base(plugin) { }
+        public DeathmatchController(ServerBootstrap plugin, ServerAnnotationsDto dto) : base(plugin, dto) { }
 
         public override void Activate()
         {

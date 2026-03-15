@@ -11,9 +11,9 @@ namespace ServerBootstrap.Contracts
         {
             return dto.Mode.ToLowerInvariant() switch
             {
-                "deathmatch" => new DeathmatchController(plugin),
-                "competitive" => new CompetitiveController(plugin),
-                //"scrim" => new ScrimController(plugin),
+                "deathmatch" => new DeathmatchController(plugin, dto),
+                "competitive" => new CompetitiveController(plugin, dto),
+                //"scrim" => new ScrimController(plugin, dto),
                 _ => null
             };
         }

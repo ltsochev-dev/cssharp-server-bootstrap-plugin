@@ -26,6 +26,7 @@ namespace ServerBootstrap.Config {
             }
 
             var mode = ReadRequiredString(annotations, "mode", errors);
+            var matchId = ReadRequiredString(annotations, "matchId", errors);
 
             string? map = ReadOptionalString(annotations, "map");
 
@@ -88,6 +89,7 @@ namespace ServerBootstrap.Config {
                 Data = new ServerAnnotationsDto
                 {
                     Mode = mode!,
+                    MatchId = matchId!,
                     Map = map,
                     MaxPlayers = maxPlayers,
                     WarmupTimeoutSeconds = warmupTimeoutSeconds,

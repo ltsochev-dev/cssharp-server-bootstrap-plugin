@@ -1,9 +1,11 @@
 ﻿using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
-using CounterStrikeSharp.API.Modules.Memory;
+using CounterStrikeSharp.API.Modules.Entities;
+using CounterStrikeSharp.API.Modules.Entities.Constants;
 using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Extensions.Logging;
+using ServerBootstrap.Config.Dto;
 using CSSTimer = CounterStrikeSharp.API.Modules.Timers.Timer;
 
 namespace ServerBootstrap.Controllers
@@ -23,9 +25,13 @@ namespace ServerBootstrap.Controllers
         private int lastRoundWinner;
         private int knifeRoundWinner;
         private CSSTimer? teamChoiceTimer;
+        private CSSTimer? fillTimer;
+        private int fillTimeRemaining;
+        private bool knifeRoundStarted = false;
+        private const int RequiredPlayers = 10;
         private MatchPhase phase = MatchPhase.Warmup;
 
-        public CompetitiveController(ServerBootstrap plugin) : base(plugin) { }
+        public CompetitiveController(ServerBootstrap plugin, ServerAnnotationsDto dto) : base(plugin, dto) { }
 
         public override void Activate()
         {
@@ -33,10 +39,30 @@ namespace ServerBootstrap.Controllers
 
             Plugin.RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
             Plugin.RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
-            Plugin.RegisterEventHandler<EventWarmupEnd>(OnWarmUpEnd, HookMode.Pre);
             Plugin.RegisterEventHandler<EventCsWinPanelMatch>(OnMatchEnd);
+            Plugin.RegisterEventHandler<EventPlayerConnectFull>(OnPlayerConnected);
 
-            Plugin.AddCommand("css_setphase", "For admins only. Sets the phase for easier debug.", (CCSPlayerController? player, CommandInfo commandInfo) => 
+            Plugin.AddCommandListener("jointeam", OnJoinTeamCommand);
+            Plugin.AddCommandListener("spectate", OnSpectateCommand);
+            Plugin.AddCommandListener("teammenu", OnTeamMenuCommand);
+
+            Server.NextFrame(() =>
+            {
+                Server.ExecuteCommand("sv_disable_show_team_select_menu 1");
+                Server.ExecuteCommand("mp_force_assign_teams 1");
+                Server.ExecuteCommand("mp_friendlyfire 0");
+                Server.ExecuteCommand("mp_autoteambalance 0");
+
+                // Control the warmup time
+                Server.ExecuteCommand("mp_do_warmup_period 1");
+                Server.ExecuteCommand("mp_warmuptime 180");
+                Server.ExecuteCommand("mp_endwarmup_player_count 0");
+                Server.ExecuteCommand("mp_warmup_pausetimer 1");
+            });
+
+            Plugin.AddCommand("css_next", "Progressed to knife phase", (CCSPlayerController? player, CommandInfo commandInfo) => { TryStartKnifeRound("userControlled"); });
+            Plugin.AddCommand("css_curphase", "Echoes the current server phase", (CCSPlayerController? player, CommandInfo commandInfo) => commandInfo.ReplyToCommand($"Current phase: {phase.ToString()}"));
+            Plugin.AddCommand("css_phase", "For admins only. Sets the phase for easier debug.", (CCSPlayerController? player, CommandInfo commandInfo) => 
             {
                 if (player is null || !player.IsValid)
                 {
@@ -64,7 +90,8 @@ namespace ServerBootstrap.Controllers
                 switch (newPhase)
                 {
                     case MatchPhase.Warmup:
-                        phase = MatchPhase.Warmup;
+                        knifeRoundStarted = false;
+                        StartFillPhase();
                         break;
                     case MatchPhase.Knife:
                         EnterKnifePhase();
@@ -77,21 +104,170 @@ namespace ServerBootstrap.Controllers
                         EnterGamePhase();
                         break;
                     case MatchPhase.MatchEnd:
-                        EnterGamePhase();
+                        EnterMatchEndPhase();
                         break;
                 }
             });
+
+            StartFillPhase();
+        }
+
+        private void StartFillPhase()
+        {
+            phase = MatchPhase.Warmup;
+
+            fillTimeRemaining = 180;
+
+            fillTimer?.Kill();
+            fillTimer = Plugin.AddTimer(1, () =>
+            {
+                if (phase != MatchPhase.Warmup)
+                {
+                    fillTimer?.Kill();
+                    fillTimer = null;
+                    return;
+                }
+
+                var connectedPlayers = Utils.GetConnectedHumanPlayers();
+
+                ShowFillTimeToPlayers(fillTimeRemaining);
+
+                if (fillTimeRemaining <= 0)
+                {
+                    fillTimer?.Kill();
+                    fillTimer = null;
+
+                    Logger.LogInformation("[Competitive] Fill timer expired.");
+
+                    // your own policy:
+                    // either start knife anyway
+                    // or check player count and shutdown
+                    TryStartKnifeRound("fill_timer_expired");
+                    return;
+                }
+
+                fillTimeRemaining--;
+            }, CounterStrikeSharp.API.Modules.Timers.TimerFlags.REPEAT);
+
+            Logger.LogInformation("[Competitive] Fill phase started. Waiting up to 180 seconds for players.");
+        }
+
+        private void TryStartKnifeRound(string reason)
+        {
+            if (knifeRoundStarted)
+                return;
+
+            if (phase != MatchPhase.Warmup)
+                return;
+
+            knifeRoundStarted = true;
+            fillTimer?.Kill();
+            fillTimer = null;
+
+            Logger.LogInformation("[Competitive] Starting knife round. Reason: {Reason}", reason);
+
+            StartKnifeRound();
+        }
+
+        private void StartKnifeRound()
+        {
+            if (phase != MatchPhase.Warmup)
+                return;
+
+            Logger.LogInformation("[Competitive] Ending warmup and starting knife round.");
+
+            Server.NextFrame(() =>
+            {
+                Server.ExecuteCommand("mp_warmup_pausetimer 0");
+                Server.ExecuteCommand("mp_warmup_end");
+
+                Server.NextFrame(() =>
+                {
+                    EnterKnifePhase();
+                });
+            });
+        }
+
+        private HookResult OnPlayerConnected(EventPlayerConnectFull @event, GameEventInfo info)
+        {
+            var player = @event.Userid;
+            if (Utils.isInvalidPlayer(player))
+            {
+                return HookResult.Continue;
+            }
+
+            if (phase == MatchPhase.Game)
+            {
+                // @todo In the future we might ask the backend at /internal :) 
+                string sidString = player?.SteamID.ToString()!;
+                bool isAllowed = annotationsDto.Teams?.AllPlayers.Contains(sidString) ?? false;
+
+                if (!isAllowed)
+                {
+                    Server.NextFrame(() => {
+                        Server.ExecuteCommand($"kickid {player?.Slot} Not part of this match");
+                    });
+
+                    return HookResult.Continue;
+                }
+            }
+
+            Server.NextFrame(() =>
+            {
+                var targetTeam = annotationsDto.Teams?.FindPlayerTeam(player?.SteamID);
+
+                if (targetTeam is null)
+                {
+                    targetTeam = Utils.GetTeamWithLeastPlayers();
+                }
+                
+                player?.SwitchTeam(targetTeam.Value);
+
+                Server.NextWorldUpdate(() =>
+                {
+                    if (player is not null && player.IsValid && !player.PawnIsAlive)
+                    {
+                        player.Respawn();
+                    }
+                });
+
+                if (phase == MatchPhase.Warmup)
+                {
+                    var connectedPlayers = Utils.GetConnectedHumanPlayers();
+
+                    Logger.LogInformation(
+                        "[Competitive] Player connected. Humans now connected: {Count}/{Required}",
+                        connectedPlayers,
+                        RequiredPlayers
+                    );
+
+                    if (connectedPlayers >= RequiredPlayers)
+                    {
+                        TryStartKnifeRound("server_filled");
+                    }
+                }
+            });
+
+            return HookResult.Continue;
         }
 
         public override void Deactivate()
         {
+            knifeRoundStarted = false;
             phase = MatchPhase.Warmup;
             teamChoiceTimer?.Kill();
             teamChoiceTimer = null;
+            fillTimer?.Kill();
+            fillTimer = null;
 
             Plugin.RemoveCommand("css_switch", OnSwitchCommand);
             Plugin.RemoveCommand("css_t", onJoinTSideCommand);
             Plugin.RemoveCommand("css_ct", onJoinCtSideCommand);
+
+            Plugin.RemoveCommandListener("jointeam", OnJoinTeamCommand, HookMode.Pre);
+            Plugin.RemoveCommandListener("spectate", OnSpectateCommand, HookMode.Pre);
+            Plugin.RemoveCommandListener("teammenu", OnTeamMenuCommand, HookMode.Pre);
+
 
             Logger.LogInformation("[Competitive] Deactivated.");
         }
@@ -138,18 +314,6 @@ namespace ServerBootstrap.Controllers
             EnterGamePhase();
         }
 
-        public HookResult OnWarmUpEnd(EventWarmupEnd ev, GameEventInfo info)
-        {
-            if (phase != MatchPhase.Warmup)
-            {
-                return HookResult.Continue;
-            }
-
-            EnterKnifePhase();
-
-            return HookResult.Continue;
-        }
-
         public HookResult OnRoundEnd(EventRoundEnd ev, GameEventInfo info)
         {
             lastRoundWinner = ev.Winner;
@@ -178,20 +342,7 @@ namespace ServerBootstrap.Controllers
 
         public HookResult OnMatchEnd(EventCsWinPanelMatch ev, GameEventInfo info)
         {
-            string winner = lastRoundWinner switch
-            {
-                2 => "Terrorists",
-                3 => "Counter-Terrorists",
-                _ => "Unknown"
-            };
-
-            Logger.LogInformation("[Bootstrap] Competitive Match End: Winner: {Winner}", winner);
-
-            Server.PrintToChatAll($"[ClutchPoint] Match finished. Winner: {winner}");
-
             EnterMatchEndPhase();
-
-            Plugin.AddTimer(8.0f, async () => await Plugin.GracefulShutdown("map_end"));
 
             return HookResult.Continue;
         }
@@ -209,17 +360,52 @@ namespace ServerBootstrap.Controllers
                 return HookResult.Continue;
             }
 
-            try
+            Server.NextWorldUpdate(() =>
             {
-                player?.RemoveWeapons();
-            } catch (Exception ex)
-            {
-                Logger.LogError(ex, "[Competitive] Failed enforcing knife-only loadout for {Player}", player?.PlayerName);
-                Logger.LogError(ex.Message);
-            }
-            
+                if (player != null && player.IsValid && player.PlayerPawn.Value != null)
+                {
+                    try
+                    {
+                        // Remove all weapons
+                        player.RemoveWeapons();
+
+                        player.GiveNamedItem(CsItem.Knife);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError(ex, "[Competitive] Failed enforcing knife-only loadout for {Player}", player?.PlayerName);
+                        Logger.LogError(ex.Message);
+                    }
+                }
+            });
 
             return HookResult.Continue;
+        }
+
+        private HookResult OnJoinTeamCommand(CCSPlayerController? player, CommandInfo command)
+        {
+            if (Utils.isInvalidPlayer(player))
+                return HookResult.Continue;
+
+            player!.PrintToChat("[ClutchPoint] Team changing is disabled on this server.");
+            return HookResult.Handled;
+        }
+
+        private HookResult OnSpectateCommand(CCSPlayerController? player, CommandInfo command)
+        {
+            if (Utils.isInvalidPlayer(player))
+                return HookResult.Continue;
+
+            player!.PrintToChat("[ClutchPoint] Spectating is disabled on this server.");
+            return HookResult.Handled;
+        }
+
+        private HookResult OnTeamMenuCommand(CCSPlayerController? player, CommandInfo command)
+        {
+            if (Utils.isInvalidPlayer(player))
+                return HookResult.Continue;
+
+            return HookResult.Handled;
         }
 
         private bool IsKnifeRoundWinner(CCSPlayerController? player)
@@ -251,10 +437,8 @@ namespace ServerBootstrap.Controllers
 
         private void EnterKnifePhase()
         {
-            if (phase != MatchPhase.Warmup)
-            {
+            if (phase == MatchPhase.Knife)
                 return;
-            }
 
             Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering Knife phase", Plugin.serverName);
 
@@ -262,16 +446,43 @@ namespace ServerBootstrap.Controllers
 
             // @todo disable all weapons, only leave knives, remove round time limits, lower the buy time to 3 seconds and reset the match
 
-            htmlWriter.WrteSimpleText($"<b><font color='red'>Knife Round!</font></b><span>Winner of this round gets to choose a team.</span>!");
+            Server.NextFrame(() =>
+            {
+                // @todo perhaps create a profile/knife.cfg and just exec it? 
+                Server.ExecuteCommand("mp_buytime 0");
+                Server.ExecuteCommand("mp_buy_anywhere 0");
+                Server.ExecuteCommand("mp_startmoney 0");
+                Server.ExecuteCommand("mp_playercashawards 0");
+                Server.ExecuteCommand("mp_teamcashawards 0");
+                Server.ExecuteCommand("mp_free_armor 0");
+                Server.ExecuteCommand("mp_teamcashawards 0");
+                Server.ExecuteCommand("mp_weapons_allow_map_placed 0");
+                Server.ExecuteCommand("mp_freezetime 5");
+
+                Server.ExecuteCommand("mp_restartgame 1");
+                
+                // Wait 1 second before displaying the HTML message to users 
+                Plugin.AddTimer(2f, () =>
+                {
+                    Server.RunOnTick(Server.TickCount + 1, () =>
+                    {
+                        foreach (var player in Utilities.GetPlayers())
+                        {
+                            if (Utils.isInvalidPlayer(player) && !player.IsBot)
+                                continue;
+
+                            player.PrintToCenterHtml(
+                                "<b><font color='red'>Knife Round!</font></b><br/>Winner of this round gets to choose a team.",
+                                15
+                            );
+                        }
+                    });
+                });
+            });
         }
 
         private void EnterPostKnifePhase()
         {
-            if (phase != MatchPhase.Knife)
-            {
-                return;
-            }
-
             Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering Post-Knife phase", Plugin.serverName);
 
             phase = MatchPhase.PostKnife;
@@ -293,17 +504,13 @@ namespace ServerBootstrap.Controllers
             // @todo remove all weapon restrictions, switch back to warmup mode with all the weapons
             Server.NextFrame(() =>
             {
-                Server.ExecuteCommand("mp_restartgame 0");
+                Server.ExecuteCommand("exec gamemode_competitive.cfg");
+                Server.ExecuteCommand("mp_restartgame 1");
             });
         }
 
         private void EnterGamePhase()
         {
-            if (phase != MatchPhase.PostKnife)
-            {
-                return;
-            }
-
             Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering Game phase", Plugin.serverName);
 
             Plugin.RemoveCommand("css_switch", OnSwitchCommand);
@@ -317,13 +524,34 @@ namespace ServerBootstrap.Controllers
 
             // @todo remove all weapon restrictions, revert to regular round time limits and revert buy time limit and reset/start the match
 
-            Server.PrintToChatAll("[ClutchPoint] Live match starting.");
-            Server.ExecuteCommand("mp_restartgame 1");
+            Server.NextFrame(() =>
+            {
+                Server.ExecuteCommand("exec gamemode_competitive.cfg");
+                Server.ExecuteCommand("sv_disable_show_team_select_menu 1");
+                Server.ExecuteCommand("mp_friendlyfire 0");
+
+                Server.PrintToChatAll("[ClutchPoint] Live match starting.");
+
+                Server.ExecuteCommand("mp_restartgame 1");
+            });
         }
 
         private void EnterMatchEndPhase()
         {
             Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering match_end phase", Plugin.serverName);
+
+            string winner = lastRoundWinner switch
+            {
+                2 => "Terrorists",
+                3 => "Counter-Terrorists",
+                _ => "Unknown"
+            };
+
+            Logger.LogInformation("[Bootstrap] Competitive Match End: Winner: {Winner}", winner);
+
+            Server.PrintToChatAll($"[ClutchPoint] Match finished. Winner: {winner}");
+
+            Plugin.AddTimer(8.0f, async () => await Plugin.GracefulShutdown("map_end"));
 
             phase = MatchPhase.MatchEnd;
         }
@@ -345,6 +573,21 @@ namespace ServerBootstrap.Controllers
             return Utils.isInvalidPlayer(player) ||
                    phase != MatchPhase.PostKnife ||
                    !IsKnifeRoundWinner(player);
+        }
+
+        private void ShowFillTimeToPlayers(int secondsRemaining)
+        {
+            var minutes = secondsRemaining / 60;
+            var seconds = secondsRemaining % 60;
+            var formatted = $"{minutes:00}:{seconds:00}";
+
+            foreach (var player in Utilities.GetPlayers())
+            {
+                if (Utils.isInvalidPlayer(player) || player!.IsBot)
+                    continue;
+
+                player.PrintToCenter($"Waiting for players...\nKnife round starts in {formatted}");
+            }
         }
     }
 }
