@@ -461,22 +461,10 @@ namespace ServerBootstrap.Controllers
 
                 Server.ExecuteCommand("mp_restartgame 1");
                 
-                // Wait 1 second before displaying the HTML message to users 
+                // Wait 1-2 second(s) before displaying the HTML message to users 
                 Plugin.AddTimer(2f, () =>
                 {
-                    Server.RunOnTick(Server.TickCount + 1, () =>
-                    {
-                        foreach (var player in Utilities.GetPlayers())
-                        {
-                            if (Utils.isInvalidPlayer(player) && !player.IsBot)
-                                continue;
-
-                            player.PrintToCenterHtml(
-                                "<b><font color='red'>Knife Round!</font></b><br/>Winner of this round gets to choose a team.",
-                                15
-                            );
-                        }
-                    });
+                    Plugin.Hud.ShowToAll(HudTemplates.KnifeRound(), 5f);
                 });
             });
         }
@@ -501,6 +489,8 @@ namespace ServerBootstrap.Controllers
                 EnterGamePhase();
             });
 
+            Plugin.Hud.ShowToAll(HudTemplates.SideChoice(), 30f, (CCSPlayerController player) => (int)player.Team == knifeRoundWinner);
+
             // @todo remove all weapon restrictions, switch back to warmup mode with all the weapons
             Server.NextFrame(() =>
             {
@@ -512,6 +502,8 @@ namespace ServerBootstrap.Controllers
         private void EnterGamePhase()
         {
             Logger.LogInformation("[Bootstrap]: Phase change: {Pod} entering Game phase", Plugin.serverName);
+
+            Plugin.Hud.ClearAll();
 
             Plugin.RemoveCommand("css_switch", OnSwitchCommand);
             Plugin.RemoveCommand("css_t", onJoinTSideCommand);
@@ -533,6 +525,11 @@ namespace ServerBootstrap.Controllers
                 Server.PrintToChatAll("[ClutchPoint] Live match starting.");
 
                 Server.ExecuteCommand("mp_restartgame 1");
+
+                Plugin.AddTimer(2, () => 
+                {
+                    Plugin.Hud.ShowToAll(HudTemplates.MatchLive(), 5f);
+                });
             });
         }
 

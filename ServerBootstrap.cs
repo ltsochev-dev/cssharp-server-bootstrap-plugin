@@ -20,6 +20,7 @@ public class ServerBootstrap : BasePlugin
     public override string ModuleDescription => "Bootstraps the servers properly according to Agones annotations.";
     private AgonesSDK agones;
     private CSSTimer? idleTimer;
+    public HtmlHud Hud { get; private set; } = null!;
     public string serverName { get; private set; } = "Unknown";
     private string prevState = "Scheduled";
     private IGameModeController? activeController;
@@ -35,6 +36,8 @@ public class ServerBootstrap : BasePlugin
         Logger.LogInformation("[Bootstrap] Load: Plugin loading...");
 
         agones.WatchGameServer(OnGameServerChange);
+
+        Hud = new HtmlHud(this);
     }
 
     public void SetController(IGameModeController controller)

@@ -7,7 +7,6 @@ namespace ServerBootstrap.Controllers
     public abstract class GameControllerBase : IGameModeController
     {
         protected readonly ServerBootstrap Plugin;
-        protected readonly HtmlWriter htmlWriter;
         protected readonly ServerAnnotationsDto annotationsDto;
 
         protected ILogger Logger => Plugin.Logger;
@@ -15,7 +14,6 @@ namespace ServerBootstrap.Controllers
         protected GameControllerBase(ServerBootstrap plugin, ServerAnnotationsDto dto)
         {
             Plugin = plugin;
-            htmlWriter = new HtmlWriter();
             annotationsDto = dto;
         }
 
